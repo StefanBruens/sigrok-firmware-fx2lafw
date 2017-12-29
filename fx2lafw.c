@@ -51,9 +51,7 @@
 volatile __bit got_sud;
 BYTE vendor_command;
 
-volatile WORD ledcounter = 1000;
-
-extern __bit gpif_acquiring;
+volatile WORD ledcounter = 0;
 
 static void setup_endpoints(void)
 {
@@ -193,6 +191,28 @@ void sudav_isr(void) __interrupt SUDAV_ISR
 	CLEAR_SUDAV();
 }
 
+// in bulk nak - the host started requesting data
+void ibn_isr(void) __interrupt IBN_ISR
+{
+        CLEAR_USBINT();
+
+	/*
+	 * If the host sent the START command, start the GPIF
+	 * engine. The host will repeat the BULK in in the next
+	 * microframe.
+	 */
+	if ((IBNIRQ & bmEP2IBN) && (gpif_acquiring == PREPARED)) {
+		ledcounter = 1;
+		PA1 = 0;
+		gpif_acquisition_start();
+	}
+
+	/* clear IBN flags for all EPs */
+	IBNIRQ = 0xff;
+
+	NAKIRQ = bmIBN;
+}
+
 void usbreset_isr(void) __interrupt USBRESET_ISR
 {
 	handle_hispeed(FALSE);
@@ -208,7 +228,7 @@ void hispeed_isr(void) __interrupt HISPEED_ISR
 void timer2_isr(void) __interrupt TF2_ISR
 {
 	/* Blink LED during acquisition, keep it on otherwise. */
-	if (gpif_acquiring) {
+	if (gpif_acquiring == RUNNING) {
 		if (--ledcounter == 0) {
 			PA1 = !PA1;
 			ledcounter = 1000;
@@ -236,6 +256,7 @@ void fx2lafw_init(void)
 
 	/* TODO: Does the order of the following lines matter? */
 	ENABLE_SUDAV();
+	ENABLE_EP2IBN();
 	ENABLE_HISPEED();
 	ENABLE_USBRESET();
 
@@ -275,7 +296,7 @@ void fx2lafw_poll(void)
 				break;
 
 			if (EP0BCL == sizeof(struct cmd_start_acquisition)) {
-				gpif_acquisition_start(
+				gpif_acquisition_prepare(
 				 (const struct cmd_start_acquisition *)EP0BUF);
 			}
 
